@@ -6,13 +6,14 @@ import pyomo.environ as pyo
 
 # data set is expected to be normalized to [0,1]
 
-def oct_model(D, n, p, Nmin, data, labels): # D, n = le nombre de data, p = le nombre de features, labels = {1,...,K} les K labels différents
+def oct_model(D, n, p, K, Nmin, data, labels): # D, n = le nombre de data, p = le nombre de features, labels = {1,...,K} les K labels différents
     
     # T (number of nodes)
 
     T = 2**(D+1)-1
 
     # Espilon
+
     eps = {}
     for j in range(1, p+1):
         col = [row[j-1] for row in data]
@@ -24,6 +25,11 @@ def oct_model(D, n, p, Nmin, data, labels): # D, n = le nombre de data, p = le n
         eps[j] = min(diffs)
     epsmax = max(eps.values())
 
+    # Y "matrix"
+
+    Y={}
+    for i, k in [i for i in range(1, n+1)], [k for k in range(1, K+1)]:
+        Y[i,k] = 1 if labels[i] == k else 0
 
     # Ancestors dictionnaries
 
@@ -54,6 +60,7 @@ def oct_model(D, n, p, Nmin, data, labels): # D, n = le nombre de data, p = le n
     m.T = pyo.Param(initialize = T) # number of nodes in the tree 
     m.p = pyo.Param(initialize = p) # nommbre de features
     m.n = pyo.Param(initialize = n) # nombre de données
+    m.K = pyo.Param(initialize = K) # nombre de labels
     m.Nmin = pyo.Param(initialize = Nmin) # nombre de data minimum dans un leaf
 
 
@@ -64,6 +71,7 @@ def oct_model(D, n, p, Nmin, data, labels): # D, n = le nombre de data, p = le n
     m.LEAVES = pyo.RangeSet((m.T)//2 + 1, m.T) # index of leaf nodes
     m.FEATURES = pyo.RangeSet(m.p)
     m.DATA = pyo.RangeSet(m.n)
+    m.LABELS = pyo.RangeSet(m.K)
 
     # Params
 
@@ -73,11 +81,14 @@ def oct_model(D, n, p, Nmin, data, labels): # D, n = le nombre de data, p = le n
     # Variables
    
     m.a = pyo.Var(m.FEATURES, m.BRANCHES, domain = pyo.Binary) # aTx < b, a étant un p-vecteur où un seul élement vaut 1 et le reste 0
-    m.b = pyo.Var(m.BRANCHES, domain = pyo.NonNegativeReals)
+    m.b = pyo.Var(m.BRANCHES, domain = pyo.NonNegativeReals, bounds = (0, 1))
     m.d = pyo.Var(m.BRANCHES, domain = pyo.Binary) # d vaut 1 si il y a un split au noeud t, 0 sinon
     m.z = pyo.Var(m.DATA, m.LEAVES, domain = pyo.Binary) # zit vaut 1 si xi is in node t
     m.l = pyo.Var(m.LEAVES, domain = pyo.Binary) #lt vaut 1 si le leaf t contient au moins 1 point
-
+    m.Nkt = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeIntegers, bounds=(0, m.n))
+    m.Nt = pyo.Var(m.LEAVES, domain = pyo.NonNegativeIntegers, bounds=(0, m.n))
+    m.c = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeIntegers)
+    
     # Constraints
 
     @m.Constraint(m.BRANCHES)
@@ -118,5 +129,15 @@ def oct_model(D, n, p, Nmin, data, labels): # D, n = le nombre de data, p = le n
         if mr not in rightanc[t]:
             return pyo.Constraint.Skip
         return pyo.quicksum(m.a[j,mr]*m.X[i,j] for j in m.FEATURES) >= m.b[mr] - (1-m.z[i,t])
+    
+    @m.Constraint(m.LABELS, m.LEAVES)
+    def number_points_label_k_in_leaf_t(m, k, t):
+        return m.Nkt[k,t] == pyo.quicksum(Y[i,k]*m.z[i,t] for i in m.DATA) 
+
+    @m.Constraint(m.LEAVES)
+    def number_points_in_leaf_t(m, t):
+        return m.Nt[t] == pyo.quicksum(m.z[i,t] for i in m.DATA) 
+       
+
         
     return m
