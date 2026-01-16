@@ -5,9 +5,34 @@ import pyomo.environ as pyo
 
 
 # data set is expected to be normalized to [0,1]
+# data and labales are expected to be np.array of size (n,p) and (n)
 
-def oct_model(D, n, p, K, Nmin, data, labels): # D, n = le nombre de data, p = le nombre de features, labels = {1,...,K} les K labels différents
+def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le nombre de features, labels = {1,...,K} les K labels différents
     
+    # Making data and labels array if they aren't already
+
+    data = np.array(data)
+    labels = np.array(labels)
+    unique_labels = np.unique(labels)
+    # Defining n and p
+
+    n, p = data.shape
+    K = len(np.unique(labels))
+
+    # Mapping labels to {1, ..., K}
+    mapping = {}
+    for l in range(len(unique_labels)):
+        mapping[l+1] = unique_labels[l]
+
+
+
+    # ^L (baseline accuracy)
+
+    values, counts = np.unique(labels, return_counts=True)
+    max_count = np.max(counts)
+    L_hat = n - max_count
+    if L_hat ==0 : L_hat = 1.0
+
     # T (number of nodes)
 
     T = 2**(D+1)-1
@@ -16,20 +41,23 @@ def oct_model(D, n, p, K, Nmin, data, labels): # D, n = le nombre de data, p = l
 
     eps = {}
     for j in range(1, p+1):
-        col = [row[j-1] for row in data]
+        col = data[:, j-1]
         unique_sorted = sorted(list(set(col)))
         if len(unique_sorted) < 2 :
             eps[j] = 0.001
             continue
         diffs = [unique_sorted[i+1] - unique_sorted[i] for i in range(len(unique_sorted)-1)]
         eps[j] = min(diffs)
+    
     epsmax = max(eps.values())
+        
 
     # Y "matrix"
 
     Y={}
-    for i, k in [i for i in range(1, n+1)], [k for k in range(1, K+1)]:
-        Y[i,k] = 1 if labels[i] == k else 0
+    for i in range(1, n+1):
+        for k in range(1, K+1):
+            Y[i,k] = 1 if labels[i-1] == mapping[k] else 0
 
     # Ancestors dictionnaries
 
@@ -62,6 +90,7 @@ def oct_model(D, n, p, K, Nmin, data, labels): # D, n = le nombre de data, p = l
     m.n = pyo.Param(initialize = n) # nombre de données
     m.K = pyo.Param(initialize = K) # nombre de labels
     m.Nmin = pyo.Param(initialize = Nmin) # nombre de data minimum dans un leaf
+    m.alpha = pyo.Param(initialize = alpha)
 
 
     # Sets
@@ -85,10 +114,11 @@ def oct_model(D, n, p, K, Nmin, data, labels): # D, n = le nombre de data, p = l
     m.d = pyo.Var(m.BRANCHES, domain = pyo.Binary) # d vaut 1 si il y a un split au noeud t, 0 sinon
     m.z = pyo.Var(m.DATA, m.LEAVES, domain = pyo.Binary) # zit vaut 1 si xi is in node t
     m.l = pyo.Var(m.LEAVES, domain = pyo.Binary) #lt vaut 1 si le leaf t contient au moins 1 point
-    m.Nkt = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeIntegers, bounds=(0, m.n))
-    m.Nt = pyo.Var(m.LEAVES, domain = pyo.NonNegativeIntegers, bounds=(0, m.n))
-    m.c = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeIntegers)
-    
+    m.Nkt = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeRealss, bounds=(0, m.n))
+    m.Nt = pyo.Var(m.LEAVES, domain = pyo.NonNegativeReals, bounds=(0, m.n))
+    m.c = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.Binary)
+    m.L = pyo.Var(m.LEAVES, domain = pyo.NonNegativeReals, bounds=(0, m.n))
+
     # Constraints
 
     @m.Constraint(m.BRANCHES)
@@ -137,7 +167,23 @@ def oct_model(D, n, p, K, Nmin, data, labels): # D, n = le nombre de data, p = l
     @m.Constraint(m.LEAVES)
     def number_points_in_leaf_t(m, t):
         return m.Nt[t] == pyo.quicksum(m.z[i,t] for i in m.DATA) 
-       
+    
+    @m.Constraint(m.LEAVES)
+    def single_class_prediction(m, t):
+        return pyo.quicksum(m.c[k,t] for k in m.LABELS) == m.l[t]
+    
+    @m.Constraint(m.LABELS, m.LEAVES)
+    def L_definition_1(m, k, t):
+        return m.L[t] >= m.Nt[t] - m.Nkt[k,t] - m.n*(1-m.c[k,t])
 
+    @m.Constraint(m.LABELS, m.LEAVES)
+    def L_definition_2(m, k, t):
+        return m.L[t] <= m.Nt[t] - m.Nkt[k,t] + m.n*m.c[k,t]
+
+    # Objective function
+
+    @m.Objective(sense = pyo.minimize)
+    def misclafication_complexity(m):
+        return (1/L_hat) * pyo.quicksum(m.L[t] for t in m.LEAVES) + m.alpha*pyo.quicksum(m.d[t] for t in m.BRANCHES)
         
     return m
