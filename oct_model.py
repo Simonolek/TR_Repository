@@ -2,14 +2,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
+import os
+os.environ["PATH"] += os.pathsep + r"C:\Program Files\Graphviz\bin"
+import graphviz
 
 
 # data set is expected to be normalized to [0,1]
-# data and labales are expected to be np.array of size (n,p) and (n)
+# data is expected to be a pd.DataFrame, labels is expected to be a list or an array
 
-def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le nombre de features, labels = {1,...,K} les K labels différents
+def oct_model(D, Nmin, data, labels, alpha): # D, labels = {1,...,K} les K labels différents
     
-    # Making data and labels array if they aren't already
+    
+    features = np.array(data.columns)
+
+    # Making data and labels array 
 
     data = np.array(data)
     labels = np.array(labels)
@@ -20,9 +26,16 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     K = len(np.unique(labels))
 
     # Mapping labels to {1, ..., K}
-    mapping = {}
+
+    mapping_labels = {}
     for l in range(len(unique_labels)):
-        mapping[l+1] = unique_labels[l]
+        mapping_labels[l+1] = unique_labels[l]
+
+    # Mapping features to {1, ..., p}
+
+    mapping_features = {}
+    for l in range(len(features)):
+        mapping_features[l+1] = features[l]
 
 
 
@@ -31,7 +44,7 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     values, counts = np.unique(labels, return_counts=True)
     max_count = np.max(counts)
     L_hat = n - max_count
-    if L_hat ==0 : L_hat = 1.0
+    if L_hat == 0 : L_hat = 1.0
 
     # T (number of nodes)
 
@@ -57,7 +70,7 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     Y={}
     for i in range(1, n+1):
         for k in range(1, K+1):
-            Y[i,k] = 1 if labels[i-1] == mapping[k] else 0
+            Y[i,k] = 1 if labels[i-1] == mapping_labels[k] else 0
 
     # Ancestors dictionnaries
 
@@ -96,8 +109,8 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     # Sets
     
     m.NODES = pyo.RangeSet((m.T)) # index of all nodes
-    m.BRANCHES = pyo.RangeSet(1, (m.T)//2) # index of branch nodes
-    m.LEAVES = pyo.RangeSet((m.T)//2 + 1, m.T) # index of leaf nodes
+    m.BRANCHES = pyo.RangeSet(1, pyo.value(m.T)//2) # index of branch nodes
+    m.LEAVES = pyo.RangeSet(pyo.value(m.T)//2 + 1, m.T) # index of leaf nodes
     m.FEATURES = pyo.RangeSet(m.p)
     m.DATA = pyo.RangeSet(m.n)
     m.LABELS = pyo.RangeSet(m.K)
@@ -105,7 +118,7 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     # Params
 
     m.X = pyo.Param(m.DATA, m.FEATURES, initialize=lambda m, i, j: data[i-1][j-1])
-    m.Y = pyo.Param(m.DATA, initialize = lambda m, i : labels[i-1])
+    m.Y = pyo.Param(m.DATA, within=pyo.Any, initialize = lambda m, i : labels[i-1])
 
     # Variables
    
@@ -114,10 +127,15 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     m.d = pyo.Var(m.BRANCHES, domain = pyo.Binary) # d vaut 1 si il y a un split au noeud t, 0 sinon
     m.z = pyo.Var(m.DATA, m.LEAVES, domain = pyo.Binary) # zit vaut 1 si xi is in node t
     m.l = pyo.Var(m.LEAVES, domain = pyo.Binary) #lt vaut 1 si le leaf t contient au moins 1 point
-    m.Nkt = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeRealss, bounds=(0, m.n))
+    m.Nkt = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.NonNegativeReals, bounds=(0, m.n))
     m.Nt = pyo.Var(m.LEAVES, domain = pyo.NonNegativeReals, bounds=(0, m.n))
     m.c = pyo.Var(m.LABELS, m.LEAVES, domain = pyo.Binary)
     m.L = pyo.Var(m.LEAVES, domain = pyo.NonNegativeReals, bounds=(0, m.n))
+
+    # Mappings pour la fonction plot
+
+    m.mapping_labels = mapping_labels
+    m.mapping_features = mapping_features
 
     # Constraints
 
@@ -160,6 +178,12 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
             return pyo.Constraint.Skip
         return pyo.quicksum(m.a[j,mr]*m.X[i,j] for j in m.FEATURES) >= m.b[mr] - (1-m.z[i,t])
     
+    @m.Constraint(m.DATA, m.LEAVES, m.BRANCHES)
+    def prevent_left_if_no_split(m, i, t, ml):
+        if ml in leftanc[t]:
+             return m.z[i,t] <= m.d[ml]
+        return pyo.Constraint.Skip
+    
     @m.Constraint(m.LABELS, m.LEAVES)
     def number_points_label_k_in_leaf_t(m, k, t):
         return m.Nkt[k,t] == pyo.quicksum(Y[i,k]*m.z[i,t] for i in m.DATA) 
@@ -183,7 +207,57 @@ def oct_model(D, Nmin, data, labels, alpha): # D, n = le nombre de data, p = le 
     # Objective function
 
     @m.Objective(sense = pyo.minimize)
-    def misclafication_complexity(m):
+    def misclasification_complexity(m):
         return (1/L_hat) * pyo.quicksum(m.L[t] for t in m.LEAVES) + m.alpha*pyo.quicksum(m.d[t] for t in m.BRANCHES)
         
     return m
+
+
+
+
+
+
+def plot_oct(m):
+
+    dot = graphviz.Digraph(comment = "OCT")
+
+    mapping_labels = getattr(m, "mapping_labels", {})
+    mapping_features = getattr(m, "mapping_features", {})
+
+    for t in m.NODES:
+        node_id = str(t) 
+        if t in m.BRANCHES:
+            d_val = pyo.value(m.d[t])
+            if d_val > 0.5:
+                for j in m.FEATURES:
+                    active_str = "error : no active"
+                    if pyo.value(m.a[j,t]) > 0.5 :
+                        active = mapping_features[j]
+                        active_str = str(active)
+                        break
+                b_str = str(pyo.value(m.b[t]))
+                label = active_str + "<" + b_str
+                dot.node(node_id, label, shape = "oval", style = "filled", fillcolor = "white")
+                dot.edge(node_id, str(2*t), label = "True")
+                dot.edge(node_id, str(2*t+1), label = "False")
+            else :
+                dot.node(node_id, "Pass", shape='oval', style='dotted', fontcolor='gray', color='gray')
+                dot.edge(node_id, str(2*t+1), style = "dashed", color = "gray")
+        else:
+            l_val = pyo.value(m.l[t])
+            if l_val > 0.5 :
+                for k in m.LABELS:
+                    if pyo.value(m.c[k,t]) > 0.5:
+                        label = mapping_labels[k]
+                        label_str = str(label)
+                        break
+                dot.node(node_id, label = label_str)
+        
+    return dot
+
+
+
+
+
+
+
