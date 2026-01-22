@@ -2,21 +2,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
-import highspy
+import gurobipy
 
 import oct_univariate_model
 import oct_hyperplanes_model
 import bus_dataset
 
-solver = "appsi_highs"
+solver = "gurobi"
 SOLVER = pyo.SolverFactory(solver)
 assert SOLVER.available()
+SOLVER.options['TimeLimit'] = 120   # Stop after 600 seconds (10 mins)
+SOLVER.options['MIPGap'] = 0.05     # Stop if within 5% of optimal
 
-D = 2
-Nmin = 0
+D = 3
+Nmin = 5
 data = bus_dataset.bus_data
 labels = bus_dataset.bus_labels
-alpha = 0
+alpha = 0.01
 
 univariate_or_hyperplanes = "hyperplanes"
 
